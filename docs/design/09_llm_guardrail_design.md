@@ -2,6 +2,8 @@
 
 작성일: 2026-05-02
 
+이 문서는 LLM 입출력 검증과 VOD 동시성 제한을 도입한 이유를 설명한다. 분석 경로를 유지보수하는 개발자는 문제와 대안을 비교하고, 입력 제한·타임아웃·슬롯 관리·실패 정책이 어디에 적용되는지 확인할 수 있다. 구현 내용에 이어 메트릭, 현재 한계와 검증 포인트를 살펴본다.
+
 ## 1. 배경 및 문제 상황
 
 ### 1-1. LLM 입력 무제한
@@ -14,7 +16,7 @@
 
 ### 1-2. LLM 출력 무검증
 
-LLM이 반환한 JSON의 감정 점수를 파싱 성공만 하면 그대로 사용했다.
+LLM이 반환한 JSON을 파싱하는 데 성공하면 감정 점수를 검증 없이 사용했다.
 
 - 감정 키 7개 중 일부가 누락돼도 `getOrDefault(emotion, 0.0)` 없이 통과
 - 점수가 0~1 범위를 벗어나도 DB에 저장
@@ -22,8 +24,8 @@ LLM이 반환한 JSON의 감정 점수를 파싱 성공만 하면 그대로 사�
 
 ### 1-3. 데이터 손실이 측정 불가
 
-배치 처리 중 새 배치가 들어오면 `AtomicBoolean.isProcessing`이 `true`일 때
-`Mono.just(List.of())`를 반환하며 채팅을 조용히 버렸다.
+배치 처리 중 새 배치가 들어오고 `AtomicBoolean.isProcessing`이 `true`이면
+`Mono.just(List.of())`를 반환해 채팅을 처리하지 않고 버렸다.
 스킵 발생 여부를 추적할 메트릭이 없었다.
 
 ### 1-4. VOD 동시 분석 무제한
@@ -85,7 +87,7 @@ VOD 동시성의 상태 머신과 알려진 한계도 이 문서에서 함께 �
 timeout = min(90, 20 + batchSize × 1.5) 초
 ```
 
-기존 고정 60초를 대체. 배치 크기 10 → 35초, 30 → 65초, 상한 90초.
+기존의 고정 60초 타임아웃을 대체한다. 배치 크기 10이면 35초, 30이면 65초를 적용한다. 상한은 90초다.
 
 ### 3-3. LLM 출력 가드레일 (`validateScores()`)
 
@@ -120,7 +122,7 @@ return Mono.defer(() -> {
 - `doFinally`로 성공·실패·취소 모든 경우에서 슬롯 반납 보장
 - `Semaphore(N)`으로 확장 시 다중 슬롯 지원 가능
 
-#### 구독 생명주기 기준 슬롯 관리 보강 (2026-06-15)
+**구독 생명주기 기준 슬롯 관리 보강 (2026-06-15)**
 
 초기 `Semaphore(1)` 구현은 `analyzeBatch()` 메서드가 호출되는 즉시 `tryAcquire()`를 수행했다.
 하지만 Reactor의 `Mono`는 구독되어야 실행되므로, 메서드 호출과 실제 작업 시작 사이에 다음 불일치가 있었다.
@@ -151,7 +153,9 @@ return Mono.defer(() -> {
 **신규 파일:** `VodAnalysisSlotService.java`, `VodAnalysisEventConsumer.java`
 **변경 파일:** `VodController.java`, `RedisConfig.java`
 
-#### Redis 키 구조
+VOD 동시성 제한은 아래의 Redis 키, 슬롯 생애주기, 장애 정책, 응답 코드로 구성한다.
+
+**Redis 키 구조**
 
 ```
 vod:active:global          → INCR/DECR, 시스템 전체 카운터 (상한 3)
@@ -159,9 +163,9 @@ vod:active:user:{ownerId}  → INCR/DECR, 사용자별 카운터 (상한 1)
 vod:owner:{videoNo}        → ownerId 문자열, 슬롯 반납 시 역매핑용
 ```
 
-모든 키에 TTL 30분 설정 → stuck 상태 자동 만료.
+모든 키에 TTL 30분을 설정해 종료되지 않은 상태가 자동으로 만료되게 한다.
 
-#### 슬롯 생애주기
+**슬롯 생애주기**
 
 ```
 triggerAnalysis() 요청
@@ -175,13 +179,13 @@ triggerAnalysis() 요청
                                        └─ slotService.releaseByVideoNo(videoNo)
 ```
 
-#### Redis 장애 시 동작 (fail-open 전략)
+**Redis 장애 시 동작 (fail-open 전략)**
 
-`tryAcquire()`가 Redis 오류를 만나면 `ACQUIRED`를 반환. 분석은 허용되지만
+`tryAcquire()`는 Redis 오류가 발생하면 `ACQUIRED`를 반환한다. 분석은 허용하지만
 슬롯 카운터가 갱신되지 않으므로 일시적으로 제한이 풀릴 수 있다.
-Redis 없이 분석이 막히는 것보다 분석이 진행되는 편이 낫다고 판단.
+Redis 장애로 분석을 차단하는 대신 분석을 계속 허용하도록 결정했다.
 
-#### HTTP 응답 코드 선택 근거
+**HTTP 응답 코드 선택 근거**
 
 | 상태 | HTTP | 이유 |
 |---|---|---|
@@ -238,10 +242,9 @@ Redis 없이 분석이 막히는 것보다 분석이 진행되는 편이 낫다�
 
 ## 7. 향후 고려사항
 
-- **MAX_GLOBAL 조정**: 현재 보수적으로 3으로 설정. Ollama 서버 스펙과 실측 데이터를 기반으로 조정 필요.
-- **QUEUED 상태**: `REJECTED_*` 대신 대기열에 등록하고 순차 처리하는 방식. 프론트엔드 상태 표시와 함께 고려.
-- **Semaphore 슬롯 수**: 실시간 분석과 VOD 분석이 같은 Ollama 인스턴스를 공유하므로, LLM 부하 실측 후 조정.
-- **대기열**: 현재는 제한 초과 요청을 즉시 거절한다. 실제 트래픽에서 대기 요구가 확인될 때만 `QUEUED` 상태를 도입한다.
+- **MAX_GLOBAL 조정**: 현재 보수적으로 3으로 설정했다. Ollama 서버 사양과 실측 데이터를 바탕으로 조정해야 한다.
+- **대기열과 QUEUED 상태**: 현재는 제한 초과 요청을 즉시 거절한다. 실제 트래픽에서 대기 요구가 확인될 때만 `REJECTED_*` 대신 대기열에 등록하고 순차 처리하는 방식을 검토한다. 도입 시 프론트엔드 상태 표시도 함께 고려한다.
+- **Semaphore 슬롯 수**: 실시간 분석과 VOD 분석이 같은 Ollama 인스턴스를 공유하므로, LLM 부하를 측정한 뒤 조정한다.
 - **상태 영속화**: collector의 VOD 상태는 인메모리다. 재기동 빈도가 높아져 조회 보정으로 부족해질 때 Redis 이전을 검토한다.
 
 ---
@@ -289,7 +292,7 @@ public class OpenAiChatClient implements ChatLlmClient {
 }
 ```
 
-`application.yaml`에 `app.llm.provider: openai` 설정 추가 후 재시작. `OllamaAnalyzerService` 변경 없음.
+`application.yaml`에 `app.llm.provider: openai` 설정을 추가한 뒤 재시작한다. `OllamaAnalyzerService`는 변경하지 않는다.
 
 ---
 

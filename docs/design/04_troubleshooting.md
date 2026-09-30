@@ -4,16 +4,20 @@
 
 현재 구조에서 자주 발생하는 증상과 복구 순서를 정리한다. 설계 수준의 장애 전략은 [`11_system_reliability.md`](11_system_reliability.md)를 참고한다.
 
+장애를 조사하는 개발자는 먼저 서비스 상태와 오류 시각을 확인하고, 증상별 항목에서 원인 후보와 점검 지점을 찾을 수 있다. 이어서 해당 대응 방법을 확인하고, 서비스별 로그와 기동·복구 절차로 처리 상태를 점검한다.
+
 ## 1. 가장 먼저 볼 것
 
-문제가 생기면 아래 순서대로 확인합니다.
+문제가 생기면 아래 순서대로 확인한다.
 
-1. 어떤 서비스가 실제로 떠 있는지 확인
+1. 실행 중인 서비스 확인
 2. `frontend -> core-api -> collector -> analyzer -> Kafka/Redis/PostgreSQL` 중 어디에서 끊겼는지 확인
-3. 브라우저 에러와 서버 로그를 같은 시각 기준으로 맞춰서 보기
+3. 브라우저 오류와 서버 로그를 같은 시각 기준으로 비교
 4. DB/Flyway, Kafka consumer group, owner 인증 쿠키를 마지막까지 확인
 
 ## 2. 증상별 빠른 가이드
+
+각 항목은 **증상 → 원인 → 확인 지점 또는 현재 동작 → 해결·대응** 순서로 읽는다. 확인할 정보가 없는 항목에서는 현재 대응을 참고하고, 로그 확인 포인트에서 처리 경로를 추적한다.
 
 ### 2-1. CHZZK 로그인 URL 생성 시 `${CHZZK_CLIENT_ID}`가 그대로 보일 때
 
@@ -45,26 +49,31 @@ spring:
 - owner 검증 필터가 `OPTIONS` preflight까지 검사해서
 - CORS 헤더가 붙기 전에 요청이 막힌 경우
 
-대응:
+확인:
+
+- 브라우저 요청이 Next API proxy를 거치는지 확인
+- owner 검증 필터가 `OPTIONS` 요청을 차단하는지 확인
+
+해결·대응:
 
 - `OPTIONS`는 필터에서 통과
-- 브라우저가 `8081`, `8083`을 직접 치지 않도록 Next API proxy 사용
+- 브라우저가 `8081`, `8083`을 직접 호출하지 않도록 Next API proxy 사용
 
 ### 2-3. `gak_app` 비밀번호 인증 실패가 날 때
 
-원인 후보:
+원인:
 
-- Docker DB가 아니라 로컬 PostgreSQL에 붙고 있음
+- Docker DB 대신 로컬 PostgreSQL에 연결됨
 - 이전 볼륨에 남은 계정 상태와 현재 설정이 다름
 
-우선 확인:
+확인:
 
 ```powershell
 Get-Service postgresql-x64-15
 docker ps
 ```
 
-현재 기준 권장:
+해결·대응:
 
 - 로컬 PostgreSQL 서비스는 중지
 - Docker Postgres만 사용
@@ -77,23 +86,28 @@ docker ps
 - 예전에는 `schema.sql` 수동 반영 상태였고
 - 새 테이블이 DB에 반영되지 않은 채 코드만 먼저 배포된 경우
 
-현재 상태:
-
-- core-api는 Flyway로 관리
-- `V2__add_vod_timeline_points.sql`이 자동 적용되어야 함
-
 확인:
 
 - `core-api` 부팅 로그에서 Flyway migrate 성공 여부
 
+해결·대응:
+
+- core-api는 Flyway로 관리
+- `V2__add_vod_timeline_points.sql`이 자동 적용되어야 함
+
 ### 2-5. VOD 분석 상태가 `ANALYZING`에서 안 넘어갈 때
 
-원인 후보:
+원인:
 
-- analyzer 완료 이벤트를 collector가 못 받음
-- analyzer/core-api consumer가 늦게 붙어 completion 체인이 끊김
+- collector가 analyzer의 완료 이벤트를 수신하지 못함
+- analyzer/core-api consumer가 늦게 연결되어 completion 이벤트 처리 흐름이 끊김
 
-현재 대응:
+확인:
+
+- collector의 완료 이벤트 수신과 analyzer/core-api consumer 상태
+- core-api에 하이라이트가 이미 저장되어 있는지 여부
+
+해결·대응:
 
 - analyzer가 `vod-analysis-complete-topic`에 완료 이벤트 발행
 - collector가 완료 이벤트를 받아 `COMPLETED`로 변경
@@ -102,15 +116,20 @@ docker ps
   - 30분 이상 결과가 없으면 `FAILED`로 전환
   - collector 재기동으로 `IDLE`이 되어도 highlight가 있으면 `COMPLETED`로 복구
 
-프론트 폴링 간격은 `REQUESTED=3초`, `ANALYZING=8초`, 그 외 활성 상태는 `5초`다. `COMPLETED`인데 timeline·highlight 저장이 아직 따라오지 못한 경우에는 1.5초 간격으로 최대 10회 동기화한다.
+프론트엔드 폴링 간격은 `REQUESTED=3초`, `ANALYZING=8초`, 그 외 활성 상태는 `5초`다. `COMPLETED`인데 timeline·highlight 저장이 아직 따라오지 못한 경우에는 1.5초 간격으로 최대 10회 동기화한다.
 
 ### 2-6. VOD 하이라이트가 특정 시점까지만 몰릴 때
 
 원인:
 
-- 크롤링이 아니라 "최종 선별 로직"에서 앞쪽 고밀도 구간이 계속 이기는 경우가 많음
+- 최종 선별 로직에서 앞쪽의 고밀도 구간이 반복해서 선택되는 경우가 많음
 
-현재 대응:
+확인:
+
+- 최종 선별이 시간대 버킷 대표를 먼저 확보하는지 여부
+- `transitionScore`가 조용하다가 급증한 구간에 반영되는지 여부
+
+해결·대응:
 
 - 전체 상위 점수만 고르지 않음
 - 시간대 버킷 대표를 먼저 확보
@@ -123,12 +142,16 @@ docker ps
 
 - `vod_timeline_points` 저장 또는 조회가 실패했을 가능성
 
-현재 대응:
+확인:
+
+- core-api의 timeline consumer 로그와 `/timeline` 조회 오류
+
+해결·대응:
 
 - core-api의 `/timeline`은 실패 시 highlight 기반 fallback 반환
 - frontend도 `timeline`이 비면 `highlights`로 fallback 타임라인 생성
 
-즉 화면이 완전히 비는 문제는 막혀 있지만, 정확한 전체 타임라인을 보려면 timeline 저장 경로가 정상이어야 합니다.
+fallback으로 화면이 완전히 비는 것을 막는다. 정확한 전체 타임라인을 조회하려면 timeline 저장 경로가 정상적으로 동작해야 한다.
 
 ## 3. 최근 주요 이슈 해결 이력
 
@@ -201,7 +224,7 @@ ollama list
 - VOD 하이라이트를 단일 "감정 점수"로만 설명하는 표현
 - 오래된 `1분 배치` 설명
 
-현재는:
+현재 기준은 다음과 같다.
 
 - Flyway 마이그레이션 기준
 - owner 전용 대시보드 기준

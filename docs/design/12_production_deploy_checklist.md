@@ -3,6 +3,8 @@
 > 이 문서는 배포 전 반드시 확인해야 할 보안·환경 설정 항목을 정리합니다.
 > 로컬 개발 실행은 `03_run_guide.md`를 참고하세요.
 
+배포 담당자는 시크릿 생성부터 환경 설정, DB 계정 준비, 접근 범위와 배포 후 동작 확인까지 순서대로 점검할 수 있습니다. 신규 서버와 기존 PostgreSQL 볼륨이 있는 환경의 절차를 구분하고, 배포 후에는 시크릿 재발급 조건과 후속 확인 절차를 참고하세요.
+
 ---
 
 ## Step 1. 시크릿 생성
@@ -21,7 +23,7 @@ openssl rand -hex 32   # GAK_POSTGRES_APP_PASSWORD
 a3f8c2d1e4b5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1
 ```
 
-생성한 값을 바로 `.env`에 붙여넣습니다.
+생성한 각 값을 `.env`의 해당 항목에 입력합니다.
 
 ---
 
@@ -73,7 +75,7 @@ GAK_DEV_SEED_ENABLED=false
 ```bash
 docker compose up -d postgres
 ```
-컨테이너 로그에서 확인:
+컨테이너 로그에 다음 메시지가 있는지 확인합니다.
 ```
 [init-app-user] Runtime user 'gak_app' ready.
 ```
@@ -97,14 +99,14 @@ docker exec -it gak-postgres psql -U $GAK_POSTGRES_ADMIN_USER -d $GAK_POSTGRES_D
 
 ## Step 4. 시크릿이 적용됐는지 확인
 
-서비스 기동 후 로그에 아래 WARN이 없어야 합니다.
+서비스를 시작한 뒤 로그에 아래 WARN 메시지가 없는지 확인합니다.
 
 ```
 [Security] gak.owner-token-secret is using the insecure default value.
 [Security] gak.internal-api-secret is using the insecure default value.
 ```
 
-WARN이 보이면 `.env` 값이 반영되지 않은 것입니다. 서비스를 재시작하고 다시 확인합니다.
+WARN 메시지가 있으면 `.env` 값을 반영하지 못한 상태입니다. 서비스를 재시작하고 다시 확인합니다.
 
 ---
 
@@ -124,13 +126,13 @@ https://실제도메인.com/api/v1/chzzk/callback
 
 | 서비스 | 포트 | 외부 노출 여부 |
 |---|---|---|
-| frontend (Next.js) | 3000 | ✅ 노출 (또는 Nginx 뒤에 위치) |
-| collector | 8081 | ❌ 내부망만 |
-| analyzer | 8082 | ❌ 내부망만 |
-| core-api | 8083 | ❌ 내부망만 (frontend Next.js가 proxy) |
-| PostgreSQL | 5432 | ❌ 내부망만 |
-| Redis | 6379 | ❌ 내부망만 |
-| Kafka | 9092 | ❌ 내부망만 |
+| frontend (Next.js) | 3000 | 노출 (또는 Nginx 뒤에 위치) |
+| collector | 8081 | 내부망만 |
+| analyzer | 8082 | 내부망만 |
+| core-api | 8083 | 내부망만 (frontend Next.js가 proxy) |
+| PostgreSQL | 5432 | 내부망만 |
+| Redis | 6379 | 내부망만 |
+| Kafka | 9092 | 내부망만 |
 
 Docker Compose 사용 시 `docker-compose.yml`에서 `ports:` 항목이 외부에 노출되지 않도록 합니다.
 core-api와 collector는 `expose:`만 사용하고 `ports:`는 제거합니다.
@@ -166,11 +168,13 @@ curl -s -H "Origin: https://evil.com" https://실제도메인.com/api/v1/lives
 **재발급 절차:**
 1. `openssl rand -hex 32`로 새 값 생성
 2. `.env`의 해당 항목 교체
-3. 영향 받는 서비스 재시작
+3. 영향받는 서비스 재시작
    - `GAK_OWNER_TOKEN_SECRET` 변경 시: core-api, collector 재시작 (기존 로그인 세션 전체 만료)
    - `GAK_INTERNAL_API_SECRET` 변경 시: core-api, analyzer 재시작
    - `GAK_POSTGRES_APP_PASSWORD` 변경 시: postgres 컨테이너에서 `ALTER USER gak_app WITH PASSWORD '새값';` 실행 후 core-api 재시작
 4. 로그에서 WARN 없음 확인
+
+재시작 후에는 Step 7의 배포 후 동작 확인을 다시 수행합니다. `GAK_OWNER_TOKEN_SECRET`을 변경했다면 기존 로그인 세션이 만료되므로 다시 로그인합니다.
 
 ---
 

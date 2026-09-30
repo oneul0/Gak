@@ -2,8 +2,9 @@
 
 최종 업데이트: 2026-05-29
 
-이 문서는 현재 코드 기준 실행 순서를 정리한 문서입니다.
-예전 문서에 있던 `schema.sql` 수동 반영, 공개 대시보드 전제, 오래된 배치 설명은 모두 제외했습니다.
+이 문서는 개발자가 로컬에서 서비스를 실행하고 로그인·라이브 채팅·VOD 분석 동작을 확인하는 절차를 안내합니다. 서비스 구성과 사전 준비를 확인한 뒤 권장 순서대로 실행하고, 동작 확인과 중지까지 진행할 수 있습니다.
+
+현재 실행 절차에는 `schema.sql` 수동 반영, 공개 대시보드 전제, 오래된 배치 설명을 적용하지 않습니다.
 
 ## 1. 서비스 구성
 
@@ -90,7 +91,7 @@ npm run dev
 
 ## 4. 로그인 및 owner 대시보드 진입
 
-현재 구조는 공개 탐색형이 아니라 owner 전용 대시보드 기준입니다.
+현재 대시보드는 owner 전용으로 운영합니다.
 
 흐름:
 
@@ -111,7 +112,7 @@ curl.exe -X POST "http://localhost:8081/api/v1/dev/mock-chat/채널ID?count=10"
 
 ## 6. VOD 분석 테스트
 
-현재 UX는 다음과 같습니다.
+VOD 분석은 다음 순서로 진행합니다.
 
 1. VOD 번호 또는 전체 URL 입력
 2. `조회`
@@ -120,24 +121,9 @@ curl.exe -X POST "http://localhost:8081/api/v1/dev/mock-chat/채널ID?count=10"
 5. 상태가 `요청 접수 -> 채팅 수집 중 -> 하이라이트 계산 중 -> 완료됨`으로 진행
 6. 완료 후 타임라인과 하이라이트 카드 확인
 
-## 7. 상태가 이상할 때 바로 볼 것
+### 6-1. 유사 하이라이트 알림 테스트 (민심 탭)
 
-- `collector`에서 `VOD-Crawler` 로그
-- `analyzer`에서 finalize 로그
-- `core-api`에서 Flyway 및 timeline/highlight consumer 로그
-
-## 8. 자주 하는 실수
-
-- 로컬 PostgreSQL이 5432를 잡고 있어 Docker DB 대신 그쪽으로 붙는 경우
-- 위 상황이면 `backend/.env`에 `GAK_POSTGRES_HOST_PORT=55432`처럼 별도 포트를 지정하고 `docker compose up -d`부터 다시 실행합니다.
-- 로컬에서 다른 서버가 8083을 사용 중이라 core-api가 `Port 8083 was already in use`로 종료되는 경우
-- core-api보다 먼저 collector를 띄워 상태 조회가 꼬이는 경우
-- analyzer가 늦게 떠서 completion 이벤트를 놓치는 경우
-- 브라우저가 backend를 직접 치는 구조라고 가정하고 디버깅하는 경우
-
-## 8-1. 유사 하이라이트 알림 테스트 (민심 탭)
-
-> VOD 분석이 완료된 데이터가 DB에 있어야 유사도 검색이 동작한다.
+> VOD 분석이 완료된 데이터가 DB에 있어야 유사도 검색이 동작합니다.
 
 1. 브라우저에서 민심 탭 진입 → **연결됨** 뱃지 확인
 2. 아래 명령으로 테스트 Kafka 메시지 주입
@@ -158,18 +144,33 @@ GAK_V2_SIMILARITY_ALERT_COOLDOWN_MINUTES=0  # 기본값 3
 
 ---
 
+## 7. 상태가 이상할 때 바로 볼 것
+
+- `collector`에서 `VOD-Crawler` 로그
+- `analyzer`에서 finalize 로그
+- `core-api`에서 Flyway 및 timeline/highlight consumer 로그
+
+## 8. 자주 하는 실수
+
+- 로컬 PostgreSQL이 5432를 사용해 Docker DB 대신 로컬 DB에 연결되는 경우
+- 위 상황이면 `backend/.env`에 `GAK_POSTGRES_HOST_PORT=55432`처럼 별도 포트를 지정하고 `docker compose up -d`부터 다시 실행합니다.
+- 로컬에서 다른 서버가 8083을 사용 중이라 core-api가 `Port 8083 was already in use`로 종료되는 경우
+- core-api보다 먼저 collector를 실행해 상태 조회에 문제가 생기는 경우
+- analyzer가 늦게 시작해 completion 이벤트를 놓치는 경우
+- 브라우저가 backend를 직접 호출한다고 가정하고 디버깅하는 경우
+
 ## 9. 중지
 
-개별 서비스는 `Ctrl + C`로 내립니다.
+개별 서비스는 `Ctrl + C`로 중지합니다.
 
-인프라는:
+인프라는 다음 명령으로 중지합니다.
 
 ```powershell
 cd backend
 docker compose down
 ```
 
-데이터까지 초기화하려면:
+**데이터 초기화:** 아래 명령은 Docker 볼륨에 저장된 데이터를 삭제합니다. 기존 로컬 데이터를 삭제해도 되는 경우에만 실행합니다.
 
 ```powershell
 cd backend

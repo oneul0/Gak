@@ -3,6 +3,8 @@
 > 구현 기준: 2026-05-29
 > 스키마 소스: `backend/core-api/src/main/resources/db/migration/V1~V9__*.sql`
 
+이 문서는 데이터 구조를 확인하는 개발자를 위한 스키마 참조 문서다. 관계도와 외래 키(FK) 설계에서 연결 방식을 확인한다. 테이블 설명·인덱스·정규화 정책에서 저장 목적과 제약을 찾을 수 있다.
+
 ---
 
 ## 관계도
@@ -105,7 +107,7 @@ erDiagram
 | `user_vod_activity.highlight_id → vod_highlights.id` | ON DELETE SET NULL | 하이라이트 삭제 시 activity 로그는 보존, 참조만 끊김 |
 | `user_vod_activity(owner_id, video_no) → user_vod_library(owner_id, video_no)` | ON DELETE CASCADE | 라이브러리 항목 삭제 시 activity 로그 함께 삭제 |
 
-`video_no`, `room_id`, `owner_id`는 치지직 외부 ID이므로 DB FK 불가 — 애플리케이션 레이어에서 관리한다.
+`video_no`, `room_id`, `owner_id`는 치지직 외부 ID이므로 DB FK를 설정할 수 없다. 애플리케이션 레이어에서 관리한다.
 
 ---
 
@@ -139,7 +141,7 @@ erDiagram
 
 ### `vod_highlights`
 
-VOD 분석으로 선별된 편집 후보 구간. V3~V9 마이그레이션을 거쳐 점수 체계·RAG 임베딩·FK 제약이 순차적으로 추가됐다.
+VOD 분석으로 선별한 편집 후보 구간을 저장한다. V3~V9 마이그레이션을 거쳐 점수 체계·RAG 임베딩·FK 제약이 순차적으로 추가됐다.
 
 | 컬럼 그룹 | 컬럼 |
 |-----------|------|
@@ -164,7 +166,7 @@ highlight_score   = (intensity×0.55 + transition×0.20 + editability×0.25)
 
 ### `vod_timeline_points`
 
-30초 윈도우 단위 채팅 활동 집계. 타임라인 시각화용으로 사용하며, 모든 윈도우를 저장하므로 `vod_highlights`보다 레코드 수가 훨씬 많다.
+30초 윈도우 단위 채팅 활동 집계를 저장한다. 타임라인 시각화용으로 사용하며, 모든 윈도우를 저장하므로 `vod_highlights`보다 레코드 수가 훨씬 많다.
 
 | 컬럼 | 설명 |
 |------|------|
@@ -177,7 +179,7 @@ highlight_score   = (intensity×0.55 + transition×0.20 + editability×0.25)
 
 ### `user_vod_library`
 
-스트리머가 조회하거나 분석을 요청한 VOD 목록. `UNIQUE(owner_id, video_no)`로 1사용자 1VOD 제한.
+스트리머가 조회하거나 분석을 요청한 VOD 목록을 저장한다. `UNIQUE(owner_id, video_no)`로 1사용자 1VOD를 제한한다.
 
 | `status` | 의미 |
 |----------|------|
@@ -189,7 +191,7 @@ highlight_score   = (intensity×0.55 + transition×0.20 + editability×0.25)
 
 ### `user_vod_activity`
 
-하이라이트에 대한 사용자 행동 로그. 개인화 추천 모델의 학습 데이터로 사용한다.
+하이라이트에 대한 사용자 행동 로그를 저장한다. 개인화 추천 모델의 학습 데이터로 사용한다.
 
 | `action_type` | 가중치 | 설명 |
 |---------------|--------|------|
@@ -225,7 +227,7 @@ highlight_score   = (intensity×0.55 + transition×0.20 + editability×0.25)
 | `vod_highlights.embedding_text` | 임베딩 모델 변경 시 원본 입력을 감사·재생성할 수 있음 |
 | `vod_timeline_points.activity_score` | 쓰기 1회·읽기 다수인 타임라인에서 집계 재계산을 피함 |
 
-`user_vod_activity.action_type`은 값 종류가 작고 애플리케이션에서 정규화하므로 별도 코드 테이블을 두지 않는다. 내부 참조는 V8·V9의 FK로 보호하고, `video_no`·`room_id`·`owner_id`처럼 CHZZK가 권위 소스인 외부 식별자는 애플리케이션에서 관리한다.
+`user_vod_activity.action_type`은 값 종류가 작고 애플리케이션에서 정규화하므로 별도 코드 테이블을 두지 않는다. 내부 참조는 V8·V9의 FK로 보호하고, `video_no`·`room_id`·`owner_id`처럼 CHZZK가 원본을 관리하는 외부 식별자는 애플리케이션에서 관리한다.
 
 ---
 

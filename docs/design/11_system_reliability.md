@@ -4,6 +4,8 @@
 > 흐름은 시퀀스 다이어그램, 구조는 클래스·상태 다이어그램으로 표현한다.  
 > 구현 기준: 2026-05-20
 
+서비스를 유지보수하는 개발자는 장애 복구, 접근 제어, 데이터 정합성과 LLM 호출 경계를 함께 살펴볼 수 있다. 각 경로가 무엇을 보호하고 실패 시 어떤 결과를 반환하는지 이해한 뒤, 운영 지표로 이상 상태를 확인하는 방법을 파악할 수 있다.
+
 ---
 
 ## 목차
@@ -21,7 +23,7 @@
 
 ### 1-1. VOD 채팅 크롤러 — 청크 단위 재시도
 
-Chzzk API의 간헐적 429·타임아웃에 대응한다. 실패 시 전체 VOD가 아닌 **해당 청크부터 재시도**하므로 이미 수집된 채팅은 보존된다.
+크롤러는 Chzzk API의 간헐적 429·타임아웃에 대응한다. 실패 시 **해당 청크부터 재시도**한다. 이미 수집한 채팅은 보존한다.
 
 ```
 MAX_RETRIES = 2  |  REQUEST_TIMEOUT = 12s
@@ -57,7 +59,7 @@ sequenceDiagram
     end
 ```
 
-`visitedCursors` Set으로 동일 cursor 재방문을 감지해 무한 루프를 사전 차단한다.
+`visitedCursors` Set으로 동일 cursor 재방문을 감지해 무한 루프를 차단한다.
 
 ---
 
@@ -370,7 +372,7 @@ classDiagram
     gak_app ..> PostgreSQL : 데이터 읽기·쓰기 (런타임)
 ```
 
-런타임 계정(`gak_app`)이 DDL 권한이 없으므로 SQL Injection이 성공하더라도 스키마 변경은 불가능하다.
+런타임 계정(`gak_app`)에는 DDL 권한이 없다. SQL Injection이 성공하더라도 이 계정으로 스키마를 변경할 수 없다.
 
 ### 3-2. 재분석 전 클린 슬레이트 흐름
 
@@ -523,7 +525,7 @@ sequenceDiagram
     end
 ```
 
-LLM이 거절해도 목록에서 즉시 제거하지 않는다. `MIN_HIGHLIGHTS=5` 충족을 위한 fallback pool에 남아있다.
+LLM이 거절해도 목록에서 즉시 제거하지 않는다. `MIN_HIGHLIGHTS=5` 충족을 위한 fallback pool에 남겨 둔다.
 
 ---
 
@@ -616,7 +618,7 @@ classDiagram
 
 ### 5-4. 메트릭 조회 엔드포인트
 
-analyzer `:8082/actuator/metrics` 를 통해 HTTP로 직접 조회할 수 있다.
+analyzer의 `:8082/actuator/metrics`를 통해 HTTP로 직접 조회할 수 있다.
 
 **전체 메트릭 목록 확인**
 
@@ -692,7 +694,7 @@ flowchart LR
 | `OwnerAccessFilter` | 인증 — 타인 데이터 접근 차단 | Fail-Secure (401) |
 | `VodAnalysisSlotService` | 가용성 — 분석 요청 처리 | Fail-Open (허용) |
 
-같은 Redis 의존이지만 "무엇을 지키느냐"에 따라 전략이 반대다.
+Redis에 의존하는 경로라도 인증 보호와 분석 가용성 중 무엇을 우선하느냐에 따라 장애 전략이 달라진다.
 
 ---
 

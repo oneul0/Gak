@@ -3,6 +3,8 @@
 > 이 문서는 Project Gak(각)의 핵심 아키텍처 결정을 기술적 의사결정 단계에 따라 기록한다.
 > 구성: **배경 → 문제 → 고려한 선택지 → 결정 및 근거 → 영향 범위**
 
+프로젝트를 유지보수하는 개발자는 각 결정의 이유와 트레이드오프를 확인하고, 관련 구조를 변경할 때 지켜야 할 조건을 파악할 수 있다. 결정별 기록을 통해 배경과 문제를 먼저 확인한 뒤 선택 근거와 영향 범위를 읽는다.
+
 ---
 
 ## ADR-001. 실시간 메시지 브로커 선택
@@ -48,11 +50,11 @@ core-api/service/ChatStreamService.java      ← analyzed-chat-topic 소비
 
 ### 배경
 
-핵심 병목은 두 가지다. (1) Kafka 메시지를 수신해 Ollama LLM에 HTTP 요청을 보내고 응답을 기다리는 I/O 대기. (2) SSE로 연결된 다수의 프론트엔드 클라이언트에 이벤트를 밀어주는 연결 유지.
+핵심 병목은 두 가지다. 하나는 Kafka 메시지를 수신해 Ollama LLM에 HTTP 요청을 보낸 뒤 응답을 기다리는 I/O 대기다. 다른 하나는 다수의 프론트엔드 클라이언트에 SSE 이벤트를 전달하기 위한 연결 유지다.
 
 ### 문제
 
-스레드 블로킹 방식에서는 LLM 응답 대기 중 스레드가 점유된다. SSE 연결 100개 = 스레드 100개 점유라면 부하가 증가할수록 스레드 풀 소진 위험이 있다.
+스레드 블로킹 방식에서는 LLM 응답 대기 중 스레드가 점유된다. SSE 연결 100개가 스레드 100개를 점유하는 구조라면 부하가 증가할수록 스레드 풀이 소진될 위험이 있다.
 
 ### 고려한 선택지
 
@@ -113,7 +115,7 @@ analyzer/service/OllamaAnalyzerService.java  ← @CircuitBreaker 적용
 analyzer/resources/application.yaml          ← resilience4j.circuitbreaker 설정
 ```
 
-**트레이드오프**: CB OPEN 구간에는 감정 분석 없이 NEUTRAL만 흐른다. VOD 하이라이트 LLM 리뷰도 이 시간 동안 degraded 상태가 된다.
+**트레이드오프**: CB OPEN 구간에는 감정 분석 없이 NEUTRAL만 흐른다. 이 구간에는 VOD 하이라이트 LLM 리뷰도 기능이 저하된 상태로 동작한다.
 
 ---
 
@@ -123,7 +125,7 @@ analyzer/resources/application.yaml          ← resilience4j.circuitbreaker 설
 
 ### 배경
 
-분석된 채팅은 두 가지 용도로 쓰인다. (1) 대시보드에 실시간으로 감정 분포를 보여주는 집계. (2) 세션 기록으로 DB에 저장.
+분석된 채팅은 두 가지 용도로 쓰인다. 대시보드에 실시간 감정 분포를 표시하기 위해 집계하고, 세션 기록을 남기기 위해 DB에 저장한다.
 
 ### 문제
 
@@ -251,7 +253,7 @@ collector/service/NidChatCollector.java   ← WebSocket 연결·메시지 수신
 collector/service/ChatProducer.java       ← 2초 배치로 묶어 Kafka 발행
 ```
 
-**트레이드오프**: 공식 API가 아니므로 치지직 내부 프로토콜 변경 시 연동이 끊길 수 있다. 현재로선 유일한 실용적 선택지다.
+**트레이드오프**: 공식 API가 아니므로 치지직 내부 프로토콜 변경 시 연동이 끊길 수 있다. 현재로서는 유일한 실용적 선택지다.
 
 ---
 
@@ -269,7 +271,7 @@ NID WebSocket으로 수신한 채팅을 건당 Kafka에 발행하면 Kafka 메�
 
 ### 결정 및 근거
 
-**2초 배치 묶음 발행 채택**. `ChatProducer`가 2초 간격으로 수집된 채팅을 `RawChatBatch`로 묶어 Kafka에 1건으로 발행한다. LLM은 배치 단위로 호출되므로 요청 수가 줄고 context 품질이 올라간다.
+**2초 배치 묶음 발행 채택**. `ChatProducer`가 2초 간격으로 수집된 채팅을 `RawChatBatch`로 묶어 Kafka에 1건으로 발행한다. LLM은 배치 단위로 호출되므로 요청 수를 줄이고 분석 맥락의 품질을 높인다.
 
 ```java
 // ChatProducer.java — Flux.interval(Duration.ofSeconds(2))로 배치 구성
@@ -305,7 +307,7 @@ common/dto/RawChatMessage.java
 common/dto/AnalyzedChatMessage.java
 ```
 
-**트레이드오프**: common 변경이 모든 서비스 재빌드를 요구한다. 서비스 간 결합을 줄이려면 향후 별도 schema registry(Avro 등)를 고려할 수 있다.
+**트레이드오프**: common을 변경하면 모든 서비스를 다시 빌드해야 한다. 서비스 간 결합을 줄이려면 향후 별도 schema registry(Avro 등)를 고려할 수 있다.
 
 ---
 
@@ -371,7 +373,7 @@ analyzer/service/OllamaAnalyzerService.java ← 수정 (chatClient 주입, HTTP 
 
 ### 배경
 
-서명된 쿠키만 사용하는 stateless 인증은 로그아웃 후 토큰을 즉시 폐기할 수 없고 헤더·쿼리 폴백은 ownerId 위조와 IDOR을 허용했다.
+서명된 쿠키만 사용하는 무상태(stateless) 인증은 로그아웃 후 토큰을 즉시 폐기할 수 없었다. 헤더·쿼리 폴백은 ownerId 위조와 IDOR을 허용했다.
 
 ### 결정 및 근거
 
@@ -407,7 +409,7 @@ analyzer/service/OllamaAnalyzerService.java ← 수정 (chatClient 주입, HTTP 
 
 ### 결정 및 근거
 
-V2 코드는 `com.gak.v2`, Kafka 토픽은 `v2-` 접두어로 분리한다. collector가 V1과 V2 raw 이벤트를 함께 발행하고 V2 agent 결과는 `V2Aggregator`가 부분 결과만으로도 프레임을 만든다. 전달 계층은 브라우저 지원과 기존 인프라 재사용을 위해 SSE를 채택했다.
+V2 코드는 `com.gak.v2`, Kafka 토픽은 `v2-` 접두어로 분리한다. collector는 V1과 V2 raw 이벤트를 함께 발행한다. `V2Aggregator`는 V2 agent의 부분 결과만으로도 프레임을 만든다. 전달 계층은 브라우저 지원과 기존 인프라 재사용을 위해 SSE를 채택했다.
 
 브리핑과 유사 하이라이트 알림은 실패 시 `Mono.empty()`로 끝나는 보조 경로로 두어 기본 `v2_frame` 전송에 영향을 주지 않는다.
 

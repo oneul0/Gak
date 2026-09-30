@@ -3,11 +3,15 @@
 > 구현 기준: 2026-05-17  
 > 대상 파일: `VodController`, `VodAnalysisSlotService`, `VodCollectorController`, `VodChatCrawlerService`, `VodAnalysisStatusService`, `VodHighlightAnalyzer`, `OllamaAnalyzerService`, `VodHighlightConsumer`, `VodTimelinePointConsumer`, `VodAnalysisEventConsumer`, `HighlightEmbeddingService`
 
-전체 흐름은 6단계로 나뉜다.
+이 문서는 VOD 분석 요청이 서비스 사이를 이동하며 하이라이트와 타임라인으로 저장되는 과정을 설명한다. 분석 경로를 유지보수하는 개발자는 각 단계의 담당 서비스, 이벤트 전달과 슬롯 반납 시점을 확인할 수 있다.
+
+전체 흐름은 **분석 요청과 슬롯 획득 → 기존 데이터 초기화 → 채팅 크롤링 → 후보 분석·선별 → 결과 저장과 슬롯 반납 → 결과 조회**의 6단계로 나뉜다. 각 다이어그램을 순서대로 읽고, 마지막 Kafka 토픽 요약에서 서비스 간 연결을 확인한다.
 
 ---
 
 ## 단계 1 — 분석 요청 및 동시성 가드레일
+
+core-api가 Redis 슬롯을 확인해 시스템 전체와 사용자별 동시 분석 수를 제한한다. 슬롯을 확보한 요청만 다음 단계로 진행한다.
 
 ```mermaid
 sequenceDiagram
@@ -47,6 +51,8 @@ sequenceDiagram
 
 ## 단계 2 — 기존 데이터 초기화 및 크롤링 시작
 
+core-api가 해당 VOD의 기존 하이라이트와 타임라인을 삭제한 뒤 collector에 크롤링을 요청한다. 재분석 결과에 이전 데이터가 섞이지 않도록 초기화하는 단계다.
+
 ```mermaid
 sequenceDiagram
     participant CA as core-api<br/>(8083)
@@ -67,6 +73,8 @@ sequenceDiagram
 ---
 
 ## 단계 3 — VOD 채팅 전체 크롤링
+
+collector가 Chzzk API에서 cursor를 따라 채팅을 수집하고 Kafka로 청크를 전달한다. collector는 수집 상태를 갱신하고 요청 실패 시 재시도한다. 반복 cursor도 처리한다.
 
 ```mermaid
 sequenceDiagram
@@ -107,6 +115,8 @@ sequenceDiagram
 ---
 
 ## 단계 4 — 하이라이트 분석 및 점수 산정
+
+analyzer가 수집된 채팅을 윈도우별로 채점하고, 상위 후보에 대한 Ollama 리뷰와 시간대 분산 선별을 수행한다. 완료 이벤트 이후에도 채팅이 도착할 수 있다. analyzer는 추가 채팅이 없는 기간을 확인한 뒤 분석을 마무리한다.
 
 ```mermaid
 sequenceDiagram
@@ -150,6 +160,8 @@ sequenceDiagram
 ---
 
 ## 단계 5 — 결과 발행 및 저장
+
+analyzer가 결과와 완료·실패 이벤트를 발행한다. core-api는 타임라인·하이라이트·임베딩을 저장하고 슬롯을 반납하며, collector는 분석 상태를 갱신한다.
 
 ```mermaid
 sequenceDiagram
@@ -195,6 +207,8 @@ sequenceDiagram
 ---
 
 ## 단계 6 — 결과 조회 (개인화 포함)
+
+frontend가 collector에서 진행 상태를, core-api에서 타임라인과 하이라이트를 조회한다. core-api는 데이터가 비어 있으면 타임라인 fallback을 처리한다. 하이라이트는 사용자 활동에 따라 개인화하여 정렬한다.
 
 ```mermaid
 sequenceDiagram
